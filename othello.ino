@@ -19,9 +19,9 @@ INA219_WE INA2 = INA219_WE(0x44);
 bool connected = false;
 // ----- 5-Way Switch Pin Definitions -----
 const int btnUp    = 5;
-const int btnDown  = 6; //7
-const int btnLeft  = 7;
-const int btnRight = 10; //6
+const int btnDown  = 10;     // Was 6, changed to 10
+const int btnLeft  = 6;      // Was 7, changed to 6 
+const int btnRight = 7;      // Was 10, changed to 7
 const int btnCenter= 20;
 const int FET1= 21;
 const int FET2= 0;
@@ -30,10 +30,25 @@ const int chargerpin= 3;
 const char* ssid = "mikesnet";
 const char* password = "springchicken";
 bool toggleState = true;     
+// Add near other global variables at top:
+enum MenuState {
+  MAIN_SCREEN,
+  MENU_SCREEN,
+  EDITING_CHARGE,
+  EDITING_CYCLES
+};
+
+MenuState currentState = MAIN_SCREEN;
+int selectedMenuItem = 0;
+bool chargeEnabled = true;
+int numCycles = 1;
+
 double totalEnergy_mWh = 0.0;
 double totalCharge_mAh = 0.0;
 unsigned long lastSampleTime = 0;
-
+float voltage2;
+float current2;
+float power2;
 
 char auth[] = "ozogc-FyTEeTsd_1wsgPs5rkFazy6L79";
 
@@ -117,26 +132,21 @@ void drawWifiIcon(int x, int y) {
   }
 }
 
-// Add near other global variables at top:
-double totalEnergy_mWh = 0.0;
-double totalCharge_mAh = 0.0;
-unsigned long lastSampleTime = 0;
 
-// Replace the doDisplay() function:
-void doDisplay(){
+
+
+// Replace the drawMain() function:
+void drawMain(){
     // ----- Read 5-Way Switch -----
     String activeButton = getButtonPressed();
+    if(activeButton != "None") {
+      currentState = MENU_SCREEN;
+      return;
+  }
     String chargerStatus = String(analogRead(chargerpin));
-    float voltage2 = INA2.getBusVoltage_V();
-    float current2 = INA2.getCurrent_mA();
-    float power2 = INA2.getBusPower();
-    
-    // Calculate accumulated values
-    unsigned long currentTime = millis();
-    double hours = (currentTime - lastSampleTime) / 3600000.0; // Convert ms to hours
-    totalEnergy_mWh += power2 * hours;
-    totalCharge_mAh += current2 * hours;
-    lastSampleTime = currentTime;
+    voltage2 = INA2.getBusVoltage_V();
+    current2 = INA2.getCurrent_mA();
+    power2 = INA2.getBusPower();
     
     display.clear();
     // Left-aligned labels
@@ -149,14 +159,94 @@ void doDisplay(){
     
     // Right-aligned values
     display.setTextAlignment(TEXT_ALIGN_RIGHT);
-    display.drawString(128, 0, String(voltage2, 2));
-    display.drawString(128, 12, String(current2, 0));
-    display.drawString(128, 24, String(totalEnergy_mWh, 0));
-    display.drawString(128, 36, String(totalCharge_mAh, 0));
+    display.drawString(128, 0, String(voltage2, 2) + "V");
+    display.drawString(128, 12, String(current2, 1) + "mA");
+    display.drawString(128, 24, String(totalEnergy_mWh, 0) + "mWh");
+    display.drawString(128, 36, String(totalCharge_mAh, 0) + "mAh");
     display.drawString(128, 48, activeButton + " " + chargerStatus);
     
     drawWifiIcon(64, 60);  // Move wifi icon to top-right
     display.display();
+}
+
+void drawMenu() {
+  display.clear();
+  const char* menuItems[] = {"Batt Test", "Charge?", "Cycles", "Profiler", "Main"};
+  int numItems = 5;
+  
+  for(int i = 0; i < numItems; i++) {
+    display.setColor(WHITE);
+    if(i == selectedMenuItem) {
+      if((currentState == EDITING_CHARGE && i == 1) || 
+         (currentState == EDITING_CYCLES && i == 2)) {
+        display.setColor(WHITE);
+      } else {
+        display.setColor(INVERSE);
+      }
+    }
+    
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.drawString(0, i*12, menuItems[i]);
+    
+    // Draw right-aligned values for Charge and Cycles
+    if(i == 1) { // Charge setting
+      display.setTextAlignment(TEXT_ALIGN_RIGHT);
+      display.setColor((currentState == EDITING_CHARGE && i == selectedMenuItem) ? INVERSE : WHITE);
+      display.drawString(128, i*12, chargeEnabled ? "Y" : "N");
+    }
+    else if(i == 2) { // Cycles setting
+      display.setTextAlignment(TEXT_ALIGN_RIGHT);
+      display.setColor((currentState == EDITING_CYCLES && i == selectedMenuItem) ? INVERSE : WHITE);
+      display.drawString(128, i*12, String(numCycles));
+    }
+  }
+  display.display();
+}
+
+void handleMenu() {
+  String activeButton = getButtonPressed();
+  
+  if(activeButton == "None") return;
+  
+  if(currentState == MENU_SCREEN) {
+      if(activeButton == "UP" && selectedMenuItem > 0) {
+          selectedMenuItem--;
+      }
+      else if(activeButton == "DOWN" && selectedMenuItem < 4) {
+          selectedMenuItem++;
+      }
+      else if(activeButton == "CENTER") {
+          if(selectedMenuItem == 1) {
+              currentState = EDITING_CHARGE;
+          }
+          else if(selectedMenuItem == 2) {
+              currentState = EDITING_CYCLES;
+          }
+          else if(selectedMenuItem == 4) {
+              currentState = MAIN_SCREEN;
+              selectedMenuItem = 0;
+          }
+      }
+  }
+  else if(currentState == EDITING_CHARGE) {
+      if(activeButton == "UP" || activeButton == "DOWN") {
+          chargeEnabled = !chargeEnabled;
+      }
+      else if(activeButton == "CENTER") {
+          currentState = MENU_SCREEN;
+      }
+  }
+  else if(currentState == EDITING_CYCLES) {
+      if(activeButton == "UP" && numCycles < 99) {
+          numCycles++;
+      }
+      else if(activeButton == "DOWN" && numCycles > 1) {
+          numCycles--;
+      }
+      else if(activeButton == "CENTER") {
+          currentState = MENU_SCREEN;
+      }
+  }
 }
 
 
@@ -164,16 +254,16 @@ void setup() {
   Serial.begin(115200);
   Wire.begin();
   FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, 1); 
-  leds[0] = CRGB(5, 0, 0);
+  leds[0] = CRGB(20, 20, 20);
   FastLED.show();
 
   // ----- Initialize INA219 Sensors -----
   if (!INA1.init()) {
-    Serial.println("Failed to find INA1 at 0x40");
+    terminal.println("Failed to find INA1 at 0x40");
     //while (1);
   }
   if (!INA2.init()) {
-    Serial.println("Failed to find INA2 at 0x44");
+    terminal.println("Failed to find INA2 at 0x44");
     //while (1);
   }
 
@@ -184,6 +274,7 @@ void setup() {
   display.init();
   //display.flipScreenVertically();
   display.setFont(ArialMT_Plain_10);
+  display.setBrightness(255);
 
   // ----- Setup 5-Way Switch Pins -----
   pinMode(btnUp, INPUT_PULLUP);
@@ -192,7 +283,7 @@ void setup() {
   pinMode(btnRight, INPUT_PULLUP);
   pinMode(btnCenter, INPUT_PULLUP);
   pinMode(chargerpin, INPUT);
-  doDisplay();
+  drawMain();
   /*pinMode(FET1, OUTPUT);
   pinMode(FET2, OUTPUT);
   digitalWrite(FET1, LOW);
@@ -229,8 +320,34 @@ void loop() {
     Blynk.run();
   }
 
-  every(500){
-    doDisplay();
+  every(100){
+    if(currentState == MAIN_SCREEN) {
+        drawMain();
+    } else {
+        handleMenu();
+        drawMenu();
+    }
+
+  }
+
+  every(1000){
+    if (current2 > 10) {
+      leds[0] = CRGB(20, 0, 0);
+      FastLED.show();
+    }
+    else {
+      leds[0] = CRGB(0, 20, 0);
+      FastLED.show();
+    }
+  }
+
+  every(5000){
+    // Calculate accumulated values
+    unsigned long currentTime = millis();
+    double hours = (currentTime - lastSampleTime) / 3600000.0; // Convert ms to hours
+    totalEnergy_mWh += power2 * hours;
+    totalCharge_mAh += current2 * hours;
+    lastSampleTime = currentTime;
   }
 
   every(10000){
