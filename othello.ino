@@ -30,8 +30,10 @@ const int chargerpin= 3;
 const char* ssid = "mikesnet";
 const char* password = "springchicken";
 bool toggleState = true;     
-float totalEnergy_mWh = 0.0;
+double totalEnergy_mWh = 0.0;
+double totalCharge_mAh = 0.0;
 unsigned long lastSampleTime = 0;
+
 
 char auth[] = "ozogc-FyTEeTsd_1wsgPs5rkFazy6L79";
 
@@ -115,36 +117,45 @@ void drawWifiIcon(int x, int y) {
   }
 }
 
+// Add near other global variables at top:
+double totalEnergy_mWh = 0.0;
+double totalCharge_mAh = 0.0;
+unsigned long lastSampleTime = 0;
+
+// Replace the doDisplay() function:
 void doDisplay(){
-      // ----- Read 5-Way Switch -----
+    // ----- Read 5-Way Switch -----
     String activeButton = getButtonPressed();
-    // ----- Read Charger Pin -----
     String chargerStatus = String(analogRead(chargerpin));
-    float voltage1 = INA1.getBusVoltage_V();
-    float current1 = INA1.getCurrent_mA();
     float voltage2 = INA2.getBusVoltage_V();
     float current2 = INA2.getCurrent_mA();
     float power2 = INA2.getBusPower();
+    
+    // Calculate accumulated values
     unsigned long currentTime = millis();
-    float hours = (currentTime - lastSampleTime) / 3600000.0; // Convert ms to hours
+    double hours = (currentTime - lastSampleTime) / 3600000.0; // Convert ms to hours
     totalEnergy_mWh += power2 * hours;
+    totalCharge_mAh += current2 * hours;
     lastSampleTime = currentTime;
+    
     display.clear();
     // Left-aligned labels
     display.setTextAlignment(TEXT_ALIGN_LEFT);
     display.drawString(0, 0, "V:");
-    display.drawString(0, 15, "mA:");
-    display.drawString(0, 30, "mWh:");
-    display.drawString(0, 45, "Status:");
+    display.drawString(0, 12, "mA:");
+    display.drawString(0, 24, "mWh:");
+    display.drawString(0, 36, "mAh:");
+    display.drawString(0, 48, "Status:");
     
     // Right-aligned values
     display.setTextAlignment(TEXT_ALIGN_RIGHT);
     display.drawString(128, 0, String(voltage2, 2));
-    display.drawString(128, 15, String(current2, 1));
-    display.drawString(128, 30, String(totalEnergy_mWh, 0));
-    display.drawString(128, 45, activeButton + " " + chargerStatus);
+    display.drawString(128, 12, String(current2, 0));
+    display.drawString(128, 24, String(totalEnergy_mWh, 0));
+    display.drawString(128, 36, String(totalCharge_mAh, 0));
+    display.drawString(128, 48, activeButton + " " + chargerStatus);
     
-    drawWifiIcon(64,60);
+    drawWifiIcon(64, 60);  // Move wifi icon to top-right
     display.display();
 }
 
@@ -233,6 +244,7 @@ void loop() {
       Blynk.virtualWrite(V7, INA2.getBusPower());
       Blynk.virtualWrite(V8, analogRead(chargerpin));
       Blynk.virtualWrite(V9, totalEnergy_mWh);
+      Blynk.virtualWrite(V10, totalCharge_mAh);
     }
   }
 
