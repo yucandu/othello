@@ -48,6 +48,7 @@ enum MenuState {
 };
 
 // Add new global variables
+int brFactor = 1;
 double dischargeMwh = 0.0;
 double dischargeMah = 0.0;
 unsigned long testStartTime = 0;
@@ -69,7 +70,7 @@ float power2;
 float voltage1;
 float current1;     
 float power1; 
-
+struct tm timeinfo;
 char auth[] = "ozogc-FyTEeTsd_1wsgPs5rkFazy6L79";
 
 const char* ntpServer = "pool.ntp.org";
@@ -228,7 +229,7 @@ void drawBattTest() {
       }
     }
   }
-  
+
 
   
   // Only update time if test is still running
@@ -272,19 +273,19 @@ void drawBattTest() {
   // Status indication
   display.setCursor(0, 56);
   if(isDischarging) {
-    leds[0] = CRGB(5, 0, 0);
+    //leds[0] = CRGB(5, 0, 0);
     display.print("DISCHARGE C");
     display.print(currentCycle);
   } else if(isCharging) {
-    leds[0] = CRGB(0, 0, 5);
+    //leds[0] = CRGB(0, 0, 5);
     display.print("CHARGE C");
     display.print(currentCycle);
   } else if(!isDischarging && !isCharging) {
-    leds[0] = CRGB(0, 5, 0);
+    //leds[0] = CRGB(0, 5, 0);
     display.print("COMPLETE C");
     display.print(currentCycle);
   }
-  FastLED.show();
+  //FastLED.show();
   display.display();
 }
 
@@ -482,16 +483,17 @@ void loop() {
   // ----- Read INA219 Sensor Values -----
 
   if ((WiFi.status() == WL_CONNECTED) && (!connected)) {
-    long m1, m2, m3, m4;
     connected = true;
+    long m1, m2, m3, m4;
     m1 = millis();
     ArduinoOTA.setHostname("BatTester");
     ArduinoOTA.begin();
     m2 = millis();
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-    m3 = millis();
     Blynk.config(auth, IPAddress(192, 168, 50, 197), 8080);
     Blynk.connect();
+    m3 = millis();
+    getLocalTime(&timeinfo);
     m4 = millis();
     terminal.println("***BATTERY TESTER v1.0 STARTED***");
     terminal.print("Connected to ");
@@ -516,18 +518,33 @@ void loop() {
       if(currentState == MAIN_SCREEN) {
         drawMain();
         if (current2 > 10) {
-          leds[0] = CRGB(5, 0, 0);
+          leds[0] = CRGB(5 * brFactor, 0, 0);
         }
-        else if (WiFi.status() == WL_CONNECTED) {leds[0] = CRGB(0, 5, 0);}
-        else {leds[0] = CRGB(5, 20, 0);}
-        FastLED.show();
+        else if (WiFi.status() == WL_CONNECTED) {leds[0] = CRGB(0, 5 * brFactor, 0);}
+        else {leds[0] = CRGB(5 * brFactor, 20 * brFactor, 0);}
+        
     } else if(currentState == BATT_TEST) {
         drawBattTest();
+        int currentHour;
+        currentHour = timeinfo.tm_hour;
+        if (currentHour > 9) {
+          brFactor = 4;
+        }
+        else {brFactor = 1;}
+        
+        if (isDischarging) {
+          leds[0] = CRGB(5 * brFactor, 0, 0);
+        } else if (isCharging) {
+          leds[0] = CRGB(0, 0, 5 * brFactor);
+        } else {
+          leds[0] = CRGB(0, 5 * brFactor, 0);
+        }
     } else {
+      leds[0] = CRGB(5 * brFactor, 0, 5 * brFactor);
         handleMenu();
         drawMenu();
     }
-
+    FastLED.show();
   }
 
 
@@ -538,8 +555,10 @@ void loop() {
     double hours = (currentTime - lastSampleTime) / 3600000.0; // Convert ms to hours
     totalEnergy_mWh += power2 * hours;
     totalCharge_mAh += current2 * hours;
-    dischargeMwh += power1 * hours;
-    dischargeMah += current1 * hours;
+    if (isDischarging) {
+      dischargeMwh += power1 * hours;
+      dischargeMah += current1 * hours;
+    }
     lastSampleTime = currentTime;
 
   }
