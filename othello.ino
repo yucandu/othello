@@ -199,24 +199,8 @@ void drawBattTest() {
    voltage1 = INA1.getBusVoltage_V();
    current1 = INA1.getCurrent_mA();
    power1 = INA1.getBusPower();
-  
-  // Update measurements only during discharge
-  if(isDischarging) {
 
-    
-    if(voltage1 < vcutoff) {
-      isDischarging = false;
-      digitalWrite(FET1, LOW);
-      if(chargeEnabled) {
-        isCharging = true;
-        digitalWrite(FET2, HIGH);
-      } else {
-        testEndTime = millis(); // Set end time if not charging
-      }
-    }
-  }
-  
-  if(isCharging && analogRead(chargerpin) < 1000) {
+  if(isCharging && analogRead(chargerpin) > 2000) {
     isCharging = false;
     digitalWrite(FET2, LOW);
     if(currentCycle < numCycles) {
@@ -230,6 +214,22 @@ void drawBattTest() {
       testEndTime = millis(); // Set end time when all cycles are complete
     }
   }
+  
+  // Update measurements only during discharge
+  if(isDischarging) {
+    if(voltage1 < vcutoff) {
+      isDischarging = false;
+      digitalWrite(FET1, LOW);
+      if(chargeEnabled) {
+        isCharging = true;
+        digitalWrite(FET2, HIGH);
+      } else {
+        testEndTime = millis(); // Set end time if not charging
+      }
+    }
+  }
+  
+
   
   // Only update time if test is still running
   unsigned long elapsedTime;
@@ -272,15 +272,15 @@ void drawBattTest() {
   // Status indication
   display.setCursor(0, 56);
   if(isDischarging) {
-    leds[0] = CRGB(20, 0, 0);
+    leds[0] = CRGB(5, 0, 0);
     display.print("DISCHARGE C");
     display.print(currentCycle);
   } else if(isCharging) {
-    leds[0] = CRGB(0, 0, 40);
+    leds[0] = CRGB(0, 0, 5);
     display.print("CHARGE C");
     display.print(currentCycle);
   } else if(!isDischarging && !isCharging) {
-    leds[0] = CRGB(0, 20, 0);
+    leds[0] = CRGB(0, 5, 0);
     display.print("COMPLETE C");
     display.print(currentCycle);
   }
@@ -516,10 +516,10 @@ void loop() {
       if(currentState == MAIN_SCREEN) {
         drawMain();
         if (current2 > 10) {
-          leds[0] = CRGB(20, 0, 0);
+          leds[0] = CRGB(5, 0, 0);
         }
-        else if (WiFi.status() == WL_CONNECTED) {leds[0] = CRGB(0, 20, 0);}
-        else {leds[0] = CRGB(20, 20, 0);}
+        else if (WiFi.status() == WL_CONNECTED) {leds[0] = CRGB(0, 5, 0);}
+        else {leds[0] = CRGB(5, 20, 0);}
         FastLED.show();
     } else if(currentState == BATT_TEST) {
         drawBattTest();
