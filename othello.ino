@@ -10,6 +10,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 
+#define NUM_SAMPLES 2500
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
 #define DATA_PIN 1
@@ -44,13 +45,35 @@ enum MenuState {
   MENU_SCREEN,
   EDITING_CHARGE,
   EDITING_CYCLES,
-  BATT_TEST
+  BATT_TEST,
+  PROFILER,
+  PROFILER_SETUP
 };
 
 // Add new global variables
+unsigned long profileStartTime = 0;
+bool isProfilerRunning = false;
+float maxCurrent = 0;  // For y-axis scaling
+
+typedef struct {
+  uint32_t time_ms[NUM_SAMPLES];   // timestamps in milliseconds
+  float voltage[NUM_SAMPLES];      // INA219 bus voltage readings
+  float current[NUM_SAMPLES];      // INA219 current readings
+  float power[NUM_SAMPLES];      // INA219 power readings
+} SensorData;
+
+SensorData dataBuffer;
+int sampleIndex = 0;
+int sampleTime = 10;
+// Add new global variables
 int brFactor = 1;
+String status = "None";
+double profileMwh;
+double profileMah;
 double dischargeMwh = 0.0;
 double dischargeMah = 0.0;
+double chargeMwh = 0.0;
+double chargeMah = 0.0;
 unsigned long testStartTime = 0;
 bool isDischarging = false;
 bool isCharging = false;
@@ -61,8 +84,8 @@ int selectedMenuItem = 0;
 bool chargeEnabled = true;
 int numCycles = 1;
 float vcutoff = 2.9;
-double totalEnergy_mWh = 0.0;
-double totalCharge_mAh = 0.0;
+double INA2_mWh = 0.0;
+double INA2_mAh = 0.0;
 unsigned long lastSampleTime = 0;
 float voltage2;
 float current2;
@@ -126,36 +149,149 @@ void printLocalTime() {
   terminal.print(asctime(timeinfo));
 }
 
-  // Global variables for debouncing
-  static unsigned long lastButtonPress = 0;
-  static String lastButtonState = "None";
+// Global variables for debouncing
+static unsigned long lastButtonPress = 0;
+static String lastButtonState = "None";
 
-  // Modified getRawButtonPressed to include debouncing
-  String getRawButtonPressed() {
-    if (digitalRead(btnUp) == LOW)    return "UP";
-    if (digitalRead(btnDown) == LOW)  return "DOWN";
-    if (digitalRead(btnLeft) == LOW)  return "LEFT";
-    if (digitalRead(btnRight) == LOW) return "RIGHT";
-    if (digitalRead(btnCenter) == LOW)return "CENTER";
-    return "None";
-  }
+// Modified getRawButtonPressed to include debouncing
+String getRawButtonPressed() {
+  if (digitalRead(btnUp) == LOW)    return "UP";
+  if (digitalRead(btnDown) == LOW)  return "DOWN";
+  if (digitalRead(btnLeft) == LOW)  return "LEFT";
+  if (digitalRead(btnRight) == LOW) return "RIGHT";
+  if (digitalRead(btnCenter) == LOW)return "CENTER";
+  return "None";
+}
 
-  String getDebouncedButton() {
-    String currentButton = getRawButtonPressed();
-    unsigned long currentTime = millis();
-    
-    if (currentButton != lastButtonState) {
-      lastButtonState = currentButton;
-      if (currentButton != "None" && currentTime - lastButtonPress > 100) {
-        lastButtonPress = currentTime;
-        return currentButton;
-      }
-    }
-    return "None";
-  }
+String getDebouncedButton() {
+  String currentButton = getRawButtonPressed();
+  unsigned long currentTime = millis();
   
+  if (currentButton != lastButtonState) {
+    lastButtonState = currentButton;
+    if (currentButton != "None" && currentTime - lastButtonPress > 100) {
+      lastButtonPress = currentTime;
+      return currentButton;
+    }
+  }
+  return "None";
+}
+
+int getDecimalPlaces(float value) {
+  if (value >= 0.1) return 1;
+  if (value >= 0.01) return 2;
+  if (value >= 0.001) return 3;
+  if (value >= 0.0001) return 4;
+  return 5;
+}
+
+void drawProfiler() {
+    if (currentState == PROFILER_SETUP) {
+        display.clearDisplay();
+        display.setTextSize(1);
+        display.setTextColor(SH110X_WHITE);
+        
+        display.setCursor(0, 20);
+        display.print("Sample time?");
+        display.setCursor(64, 20);
+        display.print(sampleTime);
+        display.print("s");
+        display.display();
+        
+        String activeButton = getDebouncedButton();
+        if (activeButton == "UP" && sampleTime < 60) {
+            sampleTime++;
+        } else if (activeButton == "DOWN" && sampleTime > 1) {
+            sampleTime--;
+        } else if (activeButton == "CENTER") {
+            currentState = PROFILER;
+            sampleIndex = 0;
+            profileStartTime = millis();
+            isProfilerRunning = true;
+            profileMwh = 0;
+            profileMah = 0;
+            maxCurrent = 0;
+        }
+        return;
+    }
+    
+    if (isProfilerRunning) {
+        // Sampling
+        if (sampleIndex < NUM_SAMPLES) {
+            float current = INA1.getCurrent_mA();
+            float voltage = INA1.getBusVoltage_V();
+            float power = INA1.getBusPower();
+            unsigned long now = millis();
+            
+            if (current > maxCurrent) maxCurrent = current;
+            
+            dataBuffer.time_ms[sampleIndex] = now - profileStartTime;
+            dataBuffer.current[sampleIndex] = current;
+            dataBuffer.voltage[sampleIndex] = voltage;
+            dataBuffer.power[sampleIndex] = power;
+            
+            // Calculate accumulated values
+            if (sampleIndex > 0) {
+                unsigned long dt = dataBuffer.time_ms[sampleIndex] - dataBuffer.time_ms[sampleIndex-1];
+                float hours = dt / 3600000.0;
+                profileMwh += power * hours;
+                profileMah += current * hours;
+            }
+            
+            sampleIndex++;
+            
+            // Check if time is up
+            if ((now - profileStartTime) >= (sampleTime * 1000)) {
+                isProfilerRunning = false;
+            }
+        }
+        
+        // Show sampling progress
+        display.clearDisplay();
+        display.setTextSize(1);
+        display.setCursor(0, 28);
+        display.print("Sampling... ");
+        display.print(sampleIndex);
+        display.display();
+    } else {
+        // Draw the chart
+        display.clearDisplay();
+        display.setTextSize(1);
+        
+        // Function to determine needed decimal places for small values
 
 
+        // In drawProfiler(), replace the accumulated values display:
+        int mwhDecimals = getDecimalPlaces(profileMwh);
+        int mahDecimals = getDecimalPlaces(profileMah);
+
+        printRightAligned(String(profileMwh, mwhDecimals) + "mWh", 128, 0);
+        printRightAligned(String(profileMah, mahDecimals) + "mAh", 128, 8);
+        
+        // Draw max current label
+        char buf[16];
+        sprintf(buf, "%0.0fmA", maxCurrent);
+        display.setCursor(0, 0);
+        display.print(buf);
+        
+        // Draw the chart
+        for (int i = 1; i < sampleIndex && i < NUM_SAMPLES; i++) {
+            int x1 = map(dataBuffer.time_ms[i-1], 0, sampleTime * 1000, 0, 127);
+            int x2 = map(dataBuffer.time_ms[i], 0, sampleTime * 1000, 0, 127);
+            int y1 = map(dataBuffer.current[i-1], 0, maxCurrent, 63, 16); // Leave room for labels
+            int y2 = map(dataBuffer.current[i], 0, maxCurrent, 63, 16);
+            display.drawLine(x1, y1, x2, y2, SH110X_WHITE);
+        }
+        
+        display.display();
+        
+        // Check for exit
+        String activeButton = getDebouncedButton();
+        if (activeButton == "CENTER") {
+            currentState = MENU_SCREEN;
+        }
+    }
+}
 
 
 
@@ -223,6 +359,8 @@ void drawBattTest() {
       digitalWrite(FET1, LOW);
       if(chargeEnabled) {
         isCharging = true;
+        chargeMah = 0;
+        chargeMwh = 0;
         digitalWrite(FET2, HIGH);
       } else {
         testEndTime = millis(); // Set end time if not charging
@@ -273,15 +411,18 @@ void drawBattTest() {
   // Status indication
   display.setCursor(0, 56);
   if(isDischarging) {
+    status = "DISCHARGING";
     //leds[0] = CRGB(5, 0, 0);
     display.print("DISCHARGE C");
     display.print(currentCycle);
   } else if(isCharging) {
     //leds[0] = CRGB(0, 0, 5);
+    status = "CHARGING";
     display.print("CHARGE C");
     display.print(currentCycle);
   } else if(!isDischarging && !isCharging) {
     //leds[0] = CRGB(0, 5, 0);
+    status = "COMPLETE";
     display.print("COMPLETE C");
     display.print(currentCycle);
   }
@@ -320,8 +461,8 @@ void drawMain() {
   // Right-aligned values
   printRightAligned(String(voltage2, 2) + "V", 128, 0);
   printRightAligned(String(current2, 1) + "mA", 128, 12);
-  printRightAligned(String(totalEnergy_mWh, 0) + "mWh", 128, 24);
-  printRightAligned(String(totalCharge_mAh, 0) + "mAh", 128, 36);
+  printRightAligned(String(INA2_mWh, 0) + "mWh", 128, 24);
+  printRightAligned(String(INA2_mAh, 0) + "mAh", 128, 36);
   printRightAligned(activeButton + " " + chargerStatus, 128, 48);
   
   drawWifiIcon(64, 60);
@@ -389,6 +530,8 @@ void handleMenu() {
               lastSampleTime = millis();
               dischargeMwh = 0;
               dischargeMah = 0;
+              chargeMah = 0;
+              chargeMwh = 0;
               currentCycle = 1;
               isDischarging = true;
               isCharging = false;
@@ -400,6 +543,9 @@ void handleMenu() {
           }
           else if(selectedMenuItem == 2) {
               currentState = EDITING_CYCLES;
+          }
+          else if(selectedMenuItem == 3) { // Profiler
+            currentState = PROFILER_SETUP;
           }
           else if(selectedMenuItem == 4) {
               currentState = MAIN_SCREEN;
@@ -518,6 +664,7 @@ void loop() {
       if(currentState == MAIN_SCREEN) {
         drawMain();
         if (current2 > 10) {
+          status = "TESTING";
           leds[0] = CRGB(5 * brFactor, 0, 0);
         }
         else if (WiFi.status() == WL_CONNECTED) {leds[0] = CRGB(0, 5 * brFactor, 0);}
@@ -539,8 +686,11 @@ void loop() {
         } else {
           leds[0] = CRGB(0, 5 * brFactor, 0);
         }
-    } else {
-      leds[0] = CRGB(5 * brFactor, 0, 5 * brFactor);
+    } else if(currentState == PROFILER || currentState == PROFILER_SETUP) {
+        leds[0] = CRGB(0, 5 * brFactor, 5 * brFactor);
+        drawProfiler();
+      } else {
+        leds[0] = CRGB(5 * brFactor, 0, 5 * brFactor);
         handleMenu();
         drawMenu();
     }
@@ -553,11 +703,15 @@ void loop() {
     // Calculate accumulated values
     unsigned long currentTime = millis();
     double hours = (currentTime - lastSampleTime) / 3600000.0; // Convert ms to hours
-    totalEnergy_mWh += power2 * hours;
-    totalCharge_mAh += current2 * hours;
+    INA2_mWh += power2 * hours;
+    INA2_mAh += current2 * hours;
     if (isDischarging) {
       dischargeMwh += power1 * hours;
       dischargeMah += current1 * hours;
+    }
+    else if (isCharging) {
+      chargeMwh += power1 * hours;
+      chargeMah += current1 * hours;
     }
     lastSampleTime = currentTime;
 
@@ -573,22 +727,13 @@ void loop() {
       Blynk.virtualWrite(V6, WiFi.RSSI());
       Blynk.virtualWrite(V7, INA2.getBusPower());
       Blynk.virtualWrite(V8, analogRead(chargerpin));
-      Blynk.virtualWrite(V9, totalEnergy_mWh);
-      Blynk.virtualWrite(V11, totalCharge_mAh);
+      Blynk.virtualWrite(V9, INA2_mWh);
+      Blynk.virtualWrite(V11, INA2_mAh);
       Blynk.virtualWrite(V12, dischargeMwh);
       Blynk.virtualWrite(V13, dischargeMah);
+      Blynk.virtualWrite(V14, chargeMwh);
+      Blynk.virtualWrite(V15, chargeMah);
+      Blynk.virtualWrite(V16, status);
     }
   }
-
-/*every(5000){
-    toggleState = !toggleState;
-    
-    if (toggleState) {
-      digitalWrite(FET1, HIGH);
-      digitalWrite(FET2, LOW);
-    } else {
-      digitalWrite(FET1, LOW);
-      digitalWrite(FET2, HIGH);
-    }
-  }*/
 }
