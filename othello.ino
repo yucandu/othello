@@ -14,6 +14,7 @@
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
 #define DATA_PIN 1
+#define currentThreshold 2
 CRGB leds[1];
 // ----- OLED Setup -----
 #define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
@@ -98,6 +99,9 @@ float voltage1;
 float current1;     
 float power1; 
 struct tm timeinfo;
+unsigned long accumulatedTestTime = 0;
+unsigned long lastTestTime = 0;
+bool wasTestingPreviously = false;
 char auth[] = "ozogc-FyTEeTsd_1wsgPs5rkFazy6L79";
 
 const char* ntpServer = "pool.ntp.org";
@@ -268,35 +272,65 @@ void drawProfiler() {
       int mahDecimals = 4;//getDecimalPlaces(profileMah);
       printRightAligned(String(profileMwh, mwhDecimals) + "mWh", 128, 0);
       printRightAligned(String(profileMah, mahDecimals) + "mAh", 128, 8);
+      display.setCursor(0, 0);
+      display.print(sampleTime, 0);
+      display.println("s");
   }
   
   // Always show max current top left if we have samples
   if (sampleIndex > 0) {
-      display.setCursor(0, 0);
-      display.print(sampleTime, 0);
-      display.println("s");
+      display.setCursor(0, 8);
       display.print(maxCurrent, 0);
       display.print("mA max");
   }
   
   // Draw the chart
   int expectedSamples = sampleTime * 33;  // Fixed x-axis scale
-  for (int i = 1; i < sampleIndex && i < NUM_SAMPLES; i++) {
-      int x1 = map(i-1, 0, expectedSamples, 0, 127);
-      int x2 = map(i, 0, expectedSamples, 0, 127);
-      int y1 = map(dataBuffer.current[i-1], 0, maxCurrent > 0 ? maxCurrent : 1000, 63, 16);
-      int y2 = map(dataBuffer.current[i], 0, maxCurrent > 0 ? maxCurrent : 1000, 63, 16);
-      display.drawLine(x1, y1, x2, y2, SH110X_WHITE);
+  float samplesPerPixel = (float)expectedSamples / 128.0;
+
+  // Draw bars for each pixel column
+  for (int x = 0; x < 128; x++) {
+      // Calculate which samples fall into this pixel column
+      int startSample = (int)(x * samplesPerPixel);
+      int endSample = (int)((x + 1) * samplesPerPixel);
+      
+      // Ensure we don't exceed actual samples
+      endSample = min(endSample, sampleIndex);
+      
+      if (startSample >= sampleIndex) break;
+      
+      // Calculate average current for this pixel column
+      float sumCurrent = 0;
+      int count = 0;
+      
+      for (int i = startSample; i < endSample && i < NUM_SAMPLES; i++) {
+          sumCurrent += dataBuffer.current[i];
+          count++;
+      }
+      
+      if (count > 0) {
+          float avgCurrent = sumCurrent / count;
+          // Map average current to pixel height
+          int barHeight = map(avgCurrent, 0, maxCurrent > 0 ? maxCurrent : 1000, 0, 47);
+          // Draw vertical bar from bottom
+          display.drawFastVLine(x, 63 - barHeight, barHeight, SH110X_WHITE);
+      }
   }
-  display.drawLine(0, 63, 128, 63, SH110X_WHITE);  // Draw x-axis
-  display.drawLine(0, 16, 128, 16, SH110X_WHITE);  // Draw x-axis
-  display.drawLine(0, 16, 0, 63, SH110X_WHITE);    // Draw y-axis
+  // Draw axes
+  display.drawFastHLine(0, 63, 128, SH110X_WHITE);  // x-axis
+  display.drawFastHLine(0, 16, 128, SH110X_WHITE);  // Draw top line
+  display.drawFastVLine(0, 16, 48, SH110X_WHITE);   // y-axis
   display.display();
   
   // Check for exit only when complete
   if (!isProfilerRunning) {
       String activeButton = getDebouncedButton();
       if (activeButton == "CENTER") {
+          sampleIndex = 0;  // Reset for next time
+          profileMwh = 0;
+          profileMah = 0;
+          maxCurrent = 0;
+          memset(&dataBuffer, 0, sizeof(dataBuffer));  // Clear buffer
           currentState = MENU_SCREEN;
       }
   }
@@ -308,15 +342,17 @@ void drawWifiIcon(int x, int y) {
   if (WiFi.status() == WL_CONNECTED) {
       // Draw three arcs relative to (x, y)
       // Outer arc
+      display.drawPixel(x - 1, y + 1, SH110X_WHITE);
       display.drawPixel(x, y, SH110X_WHITE);
-      display.drawPixel(x + 1, y + 1, SH110X_WHITE);
+      display.drawPixel(x + 1, y, SH110X_WHITE);
       display.drawPixel(x + 2, y, SH110X_WHITE);
+      display.drawPixel(x + 3, y + 1, SH110X_WHITE);
       // Middle arc
-      display.drawPixel(x, y + 2, SH110X_WHITE); 
-      display.drawPixel(x + 1, y + 3, SH110X_WHITE);
-      display.drawPixel(x + 2, y + 2, SH110X_WHITE);
+      display.drawPixel(x, y + 3, SH110X_WHITE); 
+      display.drawPixel(x + 1, y + 2, SH110X_WHITE);
+      display.drawPixel(x + 2, y + 3, SH110X_WHITE);
       // Center dot
-      display.drawPixel(x + 1, y + 4, SH110X_WHITE);
+      display.drawPixel(x + 1, y + 5, SH110X_WHITE);
   }
 }
 
@@ -328,6 +364,14 @@ void printRightAligned(const String &text, int x, int y) {
   uint16_t w, h;
   display.getTextBounds(text.c_str(), 0, 0, &x1, &y1, &w, &h);
   display.setCursor(x - w, y);
+  display.print(text);
+}
+
+void printCenterAligned(const String &text, int x, int y) {
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(text.c_str(), 0, 0, &x1, &y1, &w, &h);
+  display.setCursor(x - (w/2), y);
   display.print(text);
 }
 
@@ -443,7 +487,7 @@ void drawBattTest() {
 
 void drawMain() {
   String activeButton = getDebouncedButton();
-  if(activeButton != "None" && currentState == MAIN_SCREEN) {  // Only change to menu if we're already in main screen
+  if(activeButton != "None" && currentState == MAIN_SCREEN) {
     currentState = MENU_SCREEN;
     return;
   }
@@ -454,29 +498,35 @@ void drawMain() {
   power2 = INA2.getBusPower();
   
   display.clearDisplay();
-  display.setTextSize(1);
+  display.setTextSize(2);
   display.setTextColor(SH110X_WHITE);
   
   // Left-aligned labels
-  display.setCursor(0, 0);
-  display.print("V:");
-  display.setCursor(0, 12);
-  display.print("mA:");
-  display.setCursor(0, 24);
-  display.print("mWh:");
-  display.setCursor(0, 36);
-  display.print("mAh:");
-  display.setCursor(0, 48);
-  display.print("Status:");
+
+
+  int maxdec = 1;
+  if (INA2_mWh > 999) {maxdec = 0;}
+
+  
   
   // Right-aligned values
-  printRightAligned(String(voltage2, 2) + "V", 128, 0);
-  printRightAligned(String(current2, 1) + "mA", 128, 12);
-  printRightAligned(String(INA2_mWh, 0) + "mWh", 128, 24);
-  printRightAligned(String(INA2_mAh, 0) + "mAh", 128, 36);
-  printRightAligned(activeButton + " " + chargerStatus, 128, 48);
+  printCenterAligned(String(voltage2, 2) + "V", 64, 0);
+  if (current2 > 0) {printCenterAligned(String(current2, 1) + "mA", 64, 18);} 
+    else {printCenterAligned("0mA", 64, 18);} 
+  printCenterAligned(String(INA2_mWh, maxdec) + "mWh", 64, 36);
   
-  drawWifiIcon(64, 60);
+  // Draw accumulated time in smaller text
+  display.setTextSize(1);
+  
+  int hours = accumulatedTestTime / 3600;
+  int minutes = (accumulatedTestTime % 3600) / 60;
+  int seconds = accumulatedTestTime % 60;
+  
+  char timeStr[9];
+  sprintf(timeStr, "%02d:%02d:%02d", hours, minutes, seconds);
+  printCenterAligned(timeStr, 64, 56);
+  
+  drawWifiIcon(124, 56);
   display.display();
 }
 
@@ -557,9 +607,26 @@ void handleMenu() {
       }
     }
     else if(activeButton == "CENTER") {
-        if(selectedMenuItem == 0) { // Batt Test
-          // ... existing Batt Test code ...
-        }
+          if(selectedMenuItem == 0) { // Batt Test
+              currentState = BATT_TEST;
+              testStartTime = millis();
+              lastSampleTime = millis();
+              dischargeMwh = 0;
+              dischargeMah = 0;
+              chargeMah = 0;
+              chargeMwh = 0;
+              currentCycle = 1;
+              isDischarging = true;
+              isCharging = false;
+              digitalWrite(FET2, LOW);
+              digitalWrite(FET1, HIGH);
+          }
+          if(selectedMenuItem == 1) {
+              currentState = EDITING_CHARGE;
+          }
+          else if(selectedMenuItem == 2) {
+              currentState = EDITING_CYCLES;
+          }
         else if(selectedMenuItem == 3) { // Profiler
           currentState = PROFILER_SETUP;
           //sampleTime = 10;  // Reset to default sample time
@@ -697,13 +764,24 @@ void loop() {
   every(10){
       if(currentState == MAIN_SCREEN) {
         drawMain();
-        if (current2 > 10) {
-          status = "TESTING";
-          leds[0] = CRGB(5 * brFactor, 0, 0);
+        if (current2 > currentThreshold) {
+            status = "TESTING";
+            leds[0] = CRGB(5 * brFactor, 0, 0);
+            // Update accumulated time
+            if (!wasTestingPreviously) {
+                lastTestTime = millis() / 1000; // Convert to seconds
+                wasTestingPreviously = true;
+            }
+            accumulatedTestTime += (millis() / 1000) - lastTestTime;
+            lastTestTime = millis() / 1000;
+        } else {
+            wasTestingPreviously = false;
+            if (WiFi.status() == WL_CONNECTED) {
+                leds[0] = CRGB(0, 5 * brFactor, 0);
+            } else {
+                leds[0] = CRGB(5 * brFactor, 20 * brFactor, 0);
+            }
         }
-        else if (WiFi.status() == WL_CONNECTED) {leds[0] = CRGB(0, 5 * brFactor, 0);}
-        else {leds[0] = CRGB(5 * brFactor, 20 * brFactor, 0);}
-        
     } else if(currentState == BATT_TEST) {
         drawBattTest();
         int currentHour;
