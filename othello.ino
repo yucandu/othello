@@ -66,6 +66,7 @@ SensorData dataBuffer;
 int sampleIndex = 0;
 int sampleTime = 10;
 // Add new global variables
+bool wasCurrentLow = false;
 int brFactor = 1;
 String status = "None";
 double profileMwh;
@@ -80,6 +81,9 @@ bool isCharging = false;
 int currentCycle = 1;
 unsigned long testEndTime = 0;  // To store completion time
 MenuState currentState = MAIN_SCREEN;
+const int MENU_ITEMS_TOTAL = 6;  // Total number of menu items
+const int MENU_ITEMS_VISIBLE = 5; // How many can fit on screen
+int menuScrollOffset = 0;        // Track scroll position
 int selectedMenuItem = 0;
 bool chargeEnabled = true;
 int numCycles = 1;
@@ -186,111 +190,116 @@ int getDecimalPlaces(float value) {
 }
 
 void drawProfiler() {
-    if (currentState == PROFILER_SETUP) {
-        display.clearDisplay();
-        display.setTextSize(1);
-        display.setTextColor(SH110X_WHITE);
-        
-        display.setCursor(0, 20);
-        display.print("Sample time?");
-        display.setCursor(64, 20);
-        display.print(sampleTime);
-        display.print("s");
-        display.display();
-        
-        String activeButton = getDebouncedButton();
-        if (activeButton == "UP" && sampleTime < 60) {
-            sampleTime++;
-        } else if (activeButton == "DOWN" && sampleTime > 1) {
-            sampleTime--;
-        } else if (activeButton == "CENTER") {
-            currentState = PROFILER;
-            sampleIndex = 0;
-            profileStartTime = millis();
-            isProfilerRunning = true;
-            profileMwh = 0;
-            profileMah = 0;
-            maxCurrent = 0;
-        }
-        return;
-    }
-    
-    if (isProfilerRunning) {
-        // Sampling
-        if (sampleIndex < NUM_SAMPLES) {
-            float current = INA1.getCurrent_mA();
-            float voltage = INA1.getBusVoltage_V();
-            float power = INA1.getBusPower();
-            unsigned long now = millis();
-            
-            if (current > maxCurrent) maxCurrent = current;
-            
-            dataBuffer.time_ms[sampleIndex] = now - profileStartTime;
-            dataBuffer.current[sampleIndex] = current;
-            dataBuffer.voltage[sampleIndex] = voltage;
-            dataBuffer.power[sampleIndex] = power;
-            
-            // Calculate accumulated values
-            if (sampleIndex > 0) {
-                unsigned long dt = dataBuffer.time_ms[sampleIndex] - dataBuffer.time_ms[sampleIndex-1];
-                float hours = dt / 3600000.0;
-                profileMwh += power * hours;
-                profileMah += current * hours;
-            }
-            
-            sampleIndex++;
-            
-            // Check if time is up
-            if ((now - profileStartTime) >= (sampleTime * 1000)) {
-                isProfilerRunning = false;
-            }
-        }
-        
-        // Show sampling progress
-        display.clearDisplay();
-        display.setTextSize(1);
-        display.setCursor(0, 28);
-        display.print("Sampling... ");
-        display.print(sampleIndex);
-        display.display();
-    } else {
-        // Draw the chart
-        display.clearDisplay();
-        display.setTextSize(1);
-        
-        // Function to determine needed decimal places for small values
-
-
-        // In drawProfiler(), replace the accumulated values display:
-        int mwhDecimals = getDecimalPlaces(profileMwh);
-        int mahDecimals = getDecimalPlaces(profileMah);
-
-        printRightAligned(String(profileMwh, mwhDecimals) + "mWh", 128, 0);
-        printRightAligned(String(profileMah, mahDecimals) + "mAh", 128, 8);
-        
-        // Draw max current label
-        char buf[16];
-        sprintf(buf, "%0.0fmA", maxCurrent);
-        display.setCursor(0, 0);
-        display.print(buf);
-        
-        // Draw the chart
-        for (int i = 1; i < sampleIndex && i < NUM_SAMPLES; i++) {
-            int x1 = map(dataBuffer.time_ms[i-1], 0, sampleTime * 1000, 0, 127);
-            int x2 = map(dataBuffer.time_ms[i], 0, sampleTime * 1000, 0, 127);
-            int y1 = map(dataBuffer.current[i-1], 0, maxCurrent, 63, 16); // Leave room for labels
-            int y2 = map(dataBuffer.current[i], 0, maxCurrent, 63, 16);
-            display.drawLine(x1, y1, x2, y2, SH110X_WHITE);
-        }
-        
-        display.display();
-        
-        // Check for exit
-        String activeButton = getDebouncedButton();
-        if (activeButton == "CENTER") {
-            currentState = MENU_SCREEN;
-        }
-    }
+  if (currentState == PROFILER_SETUP) {
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SH110X_WHITE);
+      
+      display.setCursor(0, 20);
+      display.print("Sample time?");
+      printRightAligned(String(sampleTime) + "s", 128, 20);
+      display.display();
+      
+      String activeButton = getDebouncedButton();
+      float current2 = INA2.getCurrent_mA();
+      if (activeButton == "UP" && sampleTime < 60) {
+          sampleTime++;
+      } else if (activeButton == "DOWN" && sampleTime > 1) {
+          sampleTime--;
+      } else if (activeButton == "CENTER" || (wasCurrentLow && current2 > 2)) {
+          currentState = PROFILER;
+          sampleIndex = 0;
+          profileStartTime = millis();
+          isProfilerRunning = true;
+          profileMwh = 0;
+          profileMah = 0;
+          maxCurrent = 0;
+      }
+      return;
+  }
+  
+  // Draw the chart - whether running or complete
+  display.clearDisplay();
+  display.setTextSize(1);
+  
+  // Get current sample if running
+  if (isProfilerRunning && sampleIndex < NUM_SAMPLES) {
+      float current = INA2.getCurrent_mA();
+      float voltage = INA2.getBusVoltage_V();
+      float power = INA2.getBusPower();
+      unsigned long now = millis();
+      
+      if (current > maxCurrent) maxCurrent = current;
+      
+      dataBuffer.time_ms[sampleIndex] = now - profileStartTime;
+      dataBuffer.current[sampleIndex] = current;
+      dataBuffer.voltage[sampleIndex] = voltage;
+      dataBuffer.power[sampleIndex] = power;
+      
+      // Calculate accumulated values
+      if (sampleIndex > 0) {
+          unsigned long dt = dataBuffer.time_ms[sampleIndex] - dataBuffer.time_ms[sampleIndex-1];
+          float hours = dt / 3600000.0;
+          profileMwh += power * hours;
+          profileMah += current * hours;
+      }
+      
+      sampleIndex++;
+      
+      // Check if time is up
+      if ((now - profileStartTime) >= (sampleTime * 1000)) {
+          isProfilerRunning = false;
+      }
+  }
+  
+  // Draw current values at top
+  if (isProfilerRunning) {
+      // Show live current value top left
+      display.setCursor(0, 0);
+      display.print(dataBuffer.current[sampleIndex-1], 1);
+      display.print("mA");
+      
+      // Show sample count top right
+      int expectedSamples = sampleTime * 33;  // Assuming 33 samples/sec
+      printRightAligned(String(sampleIndex) + "/" + String(expectedSamples), 128, 0);
+  } else {
+      // Show accumulated values when complete
+      int mwhDecimals = 4;//getDecimalPlaces(profileMwh);
+      int mahDecimals = 4;//getDecimalPlaces(profileMah);
+      printRightAligned(String(profileMwh, mwhDecimals) + "mWh", 128, 0);
+      printRightAligned(String(profileMah, mahDecimals) + "mAh", 128, 8);
+  }
+  
+  // Always show max current top left if we have samples
+  if (sampleIndex > 0) {
+      display.setCursor(0, 0);
+      display.print(sampleTime, 0);
+      display.println("s");
+      display.print(maxCurrent, 0);
+      display.print("mA max");
+  }
+  
+  // Draw the chart
+  int expectedSamples = sampleTime * 33;  // Fixed x-axis scale
+  for (int i = 1; i < sampleIndex && i < NUM_SAMPLES; i++) {
+      int x1 = map(i-1, 0, expectedSamples, 0, 127);
+      int x2 = map(i, 0, expectedSamples, 0, 127);
+      int y1 = map(dataBuffer.current[i-1], 0, maxCurrent > 0 ? maxCurrent : 1000, 63, 16);
+      int y2 = map(dataBuffer.current[i], 0, maxCurrent > 0 ? maxCurrent : 1000, 63, 16);
+      display.drawLine(x1, y1, x2, y2, SH110X_WHITE);
+  }
+  display.drawLine(0, 63, 128, 63, SH110X_WHITE);  // Draw x-axis
+  display.drawLine(0, 16, 128, 16, SH110X_WHITE);  // Draw x-axis
+  display.drawLine(0, 16, 0, 63, SH110X_WHITE);    // Draw y-axis
+  display.display();
+  
+  // Check for exit only when complete
+  if (!isProfilerRunning) {
+      String activeButton = getDebouncedButton();
+      if (activeButton == "CENTER") {
+          currentState = MENU_SCREEN;
+      }
+  }
 }
 
 
@@ -342,6 +351,8 @@ void drawBattTest() {
     digitalWrite(FET2, LOW);
     if(currentCycle < numCycles) {
       currentCycle++;
+      double efficiency = (dischargeMwh > 0) ? (dischargeMwh / chargeMwh) * 100.0 : 0.0;
+      Blynk.virtualWrite(V17, efficiency);
       dischargeMwh = 0;
       dischargeMah = 0;
       isDischarging = true;
@@ -470,40 +481,42 @@ void drawMain() {
 }
 
 void drawMenu() {
-  if (currentState == MAIN_SCREEN) {return;}
+  if (currentState == MAIN_SCREEN) return;
   display.clearDisplay();
   display.setTextSize(1);
-  const char* menuItems[] = {"Batt Test", "Charge?", "Cycles", "Profiler", "Main"};
-  int numItems = 5;
+  const char* menuItems[] = {"Batt Test", "Charge?", "Cycles", "Profiler", "Charge Now", "Main"};
   
-  for(int i = 0; i < numItems; i++) {
+  for(int i = 0; i < MENU_ITEMS_VISIBLE; i++) {
+    int actualIndex = i + menuScrollOffset;
+    if(actualIndex >= MENU_ITEMS_TOTAL) break;
+    
     // Set text color for menu items
-    if(i == selectedMenuItem) {
-      if((currentState == EDITING_CHARGE && i == 1) || 
-         (currentState == EDITING_CYCLES && i == 2)) {
-        display.setTextColor(SH110X_WHITE); // Normal text for menu item when editing value
+    if(actualIndex == selectedMenuItem) {
+      if((currentState == EDITING_CHARGE && actualIndex == 1) || 
+         (currentState == EDITING_CYCLES && actualIndex == 2)) {
+        display.setTextColor(SH110X_WHITE);
       } else {
-        display.setTextColor(SH110X_BLACK, SH110X_WHITE); // Highlighted menu item
+        display.setTextColor(SH110X_BLACK, SH110X_WHITE);
       }
     } else {
-      display.setTextColor(SH110X_WHITE); // Normal text for non-selected items
+      display.setTextColor(SH110X_WHITE);
     }
     
     display.setCursor(0, i*12);
-    display.print(menuItems[i]);
+    display.print(menuItems[actualIndex]);
     
     // Handle right-aligned values
-    if(i == 1) { // Charge setting
-      display.setTextColor(SH110X_WHITE); // Reset to normal first
-      if(currentState == EDITING_CHARGE && i == selectedMenuItem) {
-        display.setTextColor(SH110X_BLACK, SH110X_WHITE); // Only highlight value when editing
+    if(actualIndex == 1) { // Charge setting
+      display.setTextColor(SH110X_WHITE);
+      if(currentState == EDITING_CHARGE && actualIndex == selectedMenuItem) {
+        display.setTextColor(SH110X_BLACK, SH110X_WHITE);
       }
       printRightAligned(chargeEnabled ? "Y" : "N", 128, i*12);
     }
-    else if(i == 2) { // Cycles setting
-      display.setTextColor(SH110X_WHITE); // Reset to normal first
-      if(currentState == EDITING_CYCLES && i == selectedMenuItem) {
-        display.setTextColor(SH110X_BLACK, SH110X_WHITE); // Only highlight value when editing
+    else if(actualIndex == 2) { // Cycles setting
+      display.setTextColor(SH110X_WHITE);
+      if(currentState == EDITING_CYCLES && actualIndex == selectedMenuItem) {
+        display.setTextColor(SH110X_BLACK, SH110X_WHITE);
       }
       printRightAligned(String(numCycles), 128, i*12);
     }
@@ -517,41 +530,62 @@ void handleMenu() {
   if(activeButton == "None") return;
   
   if(currentState == MENU_SCREEN) {
-      if(activeButton == "UP" && selectedMenuItem > 0) {
-          selectedMenuItem--;
+    if(activeButton == "UP") {
+      if(selectedMenuItem > 0) {
+        selectedMenuItem--;
+        // Scroll up if selected item would be off screen
+        if(selectedMenuItem < menuScrollOffset) {
+          menuScrollOffset--;
+        }
+      } else {
+        // Wrap to bottom
+        selectedMenuItem = MENU_ITEMS_TOTAL - 1;
+        menuScrollOffset = MENU_ITEMS_TOTAL - MENU_ITEMS_VISIBLE;
       }
-      else if(activeButton == "DOWN" && selectedMenuItem < 4) {
-          selectedMenuItem++;
+    }
+    else if(activeButton == "DOWN") {
+      if(selectedMenuItem < MENU_ITEMS_TOTAL - 1) {
+        selectedMenuItem++;
+        // Scroll down if selected item would be off screen
+        if(selectedMenuItem >= menuScrollOffset + MENU_ITEMS_VISIBLE) {
+          menuScrollOffset++;
+        }
+      } else {
+        // Wrap to top
+        selectedMenuItem = 0;
+        menuScrollOffset = 0;
       }
-      else if(activeButton == "CENTER") {
-            if(selectedMenuItem == 0) { // Batt Test
-              currentState = BATT_TEST;
-              testStartTime = millis();
-              lastSampleTime = millis();
-              dischargeMwh = 0;
-              dischargeMah = 0;
-              chargeMah = 0;
-              chargeMwh = 0;
-              currentCycle = 1;
-              isDischarging = true;
-              isCharging = false;
-              digitalWrite(FET2, LOW);
-              digitalWrite(FET1, HIGH);
-          }
-          if(selectedMenuItem == 1) {
-              currentState = EDITING_CHARGE;
-          }
-          else if(selectedMenuItem == 2) {
-              currentState = EDITING_CYCLES;
-          }
-          else if(selectedMenuItem == 3) { // Profiler
-            currentState = PROFILER_SETUP;
-          }
-          else if(selectedMenuItem == 4) {
-              currentState = MAIN_SCREEN;
-              selectedMenuItem = 0;
-              return;  // Add immediate return to prevent extra menu draw
-          }
+    }
+    else if(activeButton == "CENTER") {
+        if(selectedMenuItem == 0) { // Batt Test
+          // ... existing Batt Test code ...
+        }
+        else if(selectedMenuItem == 3) { // Profiler
+          currentState = PROFILER_SETUP;
+          //sampleTime = 10;  // Reset to default sample time
+          wasCurrentLow = (INA2.getCurrent_mA() < 2);  // Set initial state
+          return;
+        }
+        else if(selectedMenuItem == 4) { // Charge Now
+          currentState = BATT_TEST;
+          testStartTime = millis();
+          lastSampleTime = millis();
+          dischargeMwh = 0;
+          dischargeMah = 0;
+          chargeMah = 0;
+          chargeMwh = 0;
+          currentCycle = 1;
+          isDischarging = false;
+          isCharging = true;
+          digitalWrite(FET1, LOW);
+          digitalWrite(FET2, HIGH);
+        }
+        else if(selectedMenuItem == 5) { // Main (moved from 4 to 5)
+          currentState = MAIN_SCREEN;
+          selectedMenuItem = 0;
+          menuScrollOffset = 0;
+          return;
+        }
       }
   }
   else if(currentState == EDITING_CHARGE) {
@@ -718,7 +752,7 @@ void loop() {
   }
 
   every(10000){
-    if (WiFi.status() == WL_CONNECTED) {
+    if ((WiFi.status() == WL_CONNECTED) && (!isProfilerRunning)) {
       Blynk.virtualWrite(V1, INA1.getBusVoltage_V());
       Blynk.virtualWrite(V2, INA1.getCurrent_mA());
       Blynk.virtualWrite(V3, INA1.getBusPower());
@@ -734,6 +768,8 @@ void loop() {
       Blynk.virtualWrite(V14, chargeMwh);
       Blynk.virtualWrite(V15, chargeMah);
       Blynk.virtualWrite(V16, status);
+      Blynk.virtualWrite(V17, temperatureRead());
+      
     }
   }
 }
