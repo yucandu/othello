@@ -512,7 +512,7 @@ void drawMain() {
   // Right-aligned values
   printCenterAligned(String(voltage2, 2) + "V", 64, 0);
   if (current2 > 0) {printCenterAligned(String(current2, 1) + "mA", 64, 18);} 
-    else {printCenterAligned("0mA", 64, 18);} 
+    else {printCenterAligned("0.0mA", 64, 18);} 
   printCenterAligned(String(INA2_mWh, maxdec) + "mWh", 64, 36);
   
   // Draw accumulated time in smaller text
